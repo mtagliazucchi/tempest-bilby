@@ -4,11 +4,11 @@ Bilby sampler plugin for the tempest nested sampler.
 
 ## Installation
 
-"""
+```bash
 git clone https://github.com/mtagliazucchi/tempest-bilby
 cd tempest-bilby
 pip install -e .
-"""
+```
 
 ## Usage
 
