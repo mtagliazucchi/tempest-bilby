@@ -1,7 +1,5 @@
-import os
-import pickle
 import numpy as np
-
+import pandas as pd
 import bilby
 from bilby.core.sampler.base_sampler import Sampler
 
@@ -15,33 +13,29 @@ class Tempest(Sampler):
 
     sampler_name = "tempest"
 
+    # arguments users can pass through bilby.run_sampler()
     default_kwargs = dict(
-        nlive=500,
-        max_iters=None,
-        checkpoint_interval=1000,
+        n_total=4096,
+        n_particles = None,
+        progress=True,
+        resume_state_path=None,
+        save_every=None,
+        vectorize=False,
     )
 
-    def __init__(self, likelihood, priors, outdir="outdir", label="label", **kwargs):
+    def __init__(self, likelihood, priors, **kwargs):
 
-        super().__init__(likelihood, priors, outdir=outdir, label=label, **kwargs)
+        super().__init__(likelihood, priors, **kwargs)
 
         if tp is None:
             raise ImportError("tempest-sampler must be installed")
 
         self.n_dim = len(self.priors)
 
-        self.checkpoint_file = os.path.join(
-            self.outdir,
-            f"{self.label}_tempest_checkpoint.pkl",
-        )
-
-        self.resume = kwargs.get("resume", True)
-
-        self._sampler = None
-
-    # --------------------------------------------------
-    # Bilby interface functions
-    # --------------------------------------------------
+        self.kwargs["n_particles"] = self.kwargs.get("n_particles", 2 * self.n_dim)
+    # -------------------------
+    # Prior transform
+    # -------------------------
 
     def prior_transform(self, u):
 
@@ -52,6 +46,10 @@ class Tempest(Sampler):
 
         return np.array(params)
 
+    # -------------------------
+    # Log-likelihood
+    # -------------------------
+
     def log_likelihood(self, x):
 
         if x.ndim == 1:
@@ -60,6 +58,7 @@ class Tempest(Sampler):
         logl = []
 
         for row in x:
+
             params = dict(zip(self.priors.keys(), row))
 
             self.likelihood.parameters.update(params)
@@ -68,86 +67,49 @@ class Tempest(Sampler):
 
         return np.array(logl)
 
-    # --------------------------------------------------
-    # Checkpoint helpers
-    # --------------------------------------------------
-
-    def save_checkpoint(self):
-
-        if self._sampler is None:
-            return
-
-        with open(self.checkpoint_file, "wb") as f:
-            pickle.dump(self._sampler, f)
-
-    def load_checkpoint(self):
-
-        if not os.path.exists(self.checkpoint_file):
-            return None
-
-        with open(self.checkpoint_file, "rb") as f:
-            sampler = pickle.load(f)
-
-        return sampler
-
-    # --------------------------------------------------
+    # -------------------------
+    # Run sampler
+    # -------------------------
 
     def run_sampler(self):
 
-        if self.resume:
-            sampler = self.load_checkpoint()
-        else:
-            sampler = None
-
-        if sampler is None:
-
-            sampler = tp.Sampler(
-                prior_transform=self.prior_transform,
-                log_likelihood=self.log_likelihood,
-                n_dim=self.n_dim,
-                vectorize=True,
-                nlive=self.kwargs.get("nlive"),
-            )
-
-        self._sampler = sampler
-
-        max_iters = self.kwargs.get("max_iters")
-        checkpoint_interval = self.kwargs.get("checkpoint_interval")
-
-        iteration = 0
-
-        while True:
-
-            sampler.run(niter=checkpoint_interval)
-
-            iteration += checkpoint_interval
-
-            self.save_checkpoint()
-
-            if max_iters is not None and iteration >= max_iters:
-                break
-
-            if sampler.is_finished():
-                break
-
-        samples, weights, logl = sampler.posterior()
-
-        logz, logz_err = sampler.evidence()
-
-        self.result.log_evidence = logz
-        self.result.log_evidence_err = logz_err
-
-        # Convert weighted posterior → equal weight
-        weights = weights / np.sum(weights)
-
-        idx = np.random.choice(
-            np.arange(len(samples)),
-            size=len(samples),
-            p=weights,
+        # Tempest constructor arguments
+        sampler = tp.Sampler(
+            prior_transform=self.prior_transform,
+            log_likelihood=self.log_likelihood,
+            n_dim=self.n_dim,
+            n_particles = self.kwargs["n_particles"],
+            vectorize=self.kwargs["vectorize"],
         )
 
-        self.result.samples = samples[idx]
+        # Tempest run() arguments
+        run_kwargs = {}
+    
+        for key in ["n_total", "progress", "resume_state_path", "save_every"]:
+            value = self.kwargs.get(key)
+            if value is not None:
+                run_kwargs[key] = value
+    
+        sampler.run(**run_kwargs)
+      
+        samples, _, logl = sampler.posterior(resample=True)
+        logz, logz_err = sampler.evidence()
 
-        self.result.log_likelihood_evaluations = logl[idx]
+        if logz_err is None:
+            logz_err = np.nan
 
+        # Include the log likelihood and log prior in the samples
+        # so that we can populate the result object correctly
+        samples = pd.DataFrame(samples, columns=self.search_parameter_keys)
+        samples["log_likelihood"] = logl
+    
+        self.result.samples = posterior_samples.drop(
+            columns=["log_likelihood"]
+        ).values
+        self.result.log_likelihood_evaluations = posterior_samples[
+            "log_likelihood"
+        ].values
+        self.result.log_evidence = logz
+        self.result.log_evidence_err = logz_err
+        
         return self.result
