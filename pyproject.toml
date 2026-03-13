@@ -1,3 +1,3 @@
 [build-system]
-requires = ["setuptools", "wheel", "tempest-sampler"]
+requires = ["setuptools", "wheel", "bilby", "tempest-sampler"]
 build-backend = "setuptools.build_meta"
