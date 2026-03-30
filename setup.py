@@ -13,7 +13,7 @@ setup(
     ],
     entry_points={
         "bilby.samplers": [
-            "tempest = tempest_bilby.tempest:Tempest"
+            "tempest = tempest_bilby.plugin:Tempest"
         ]
     },
 )
